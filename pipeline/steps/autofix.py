@@ -35,5 +35,145 @@ from ..common import ERROR, parse_yolo_line  # noqa: F401
 
 
 def fix(ds, issues, cfg):
-    # TODO
-    raise NotImplementedError("autofix chưa làm")
+    fixes = []
+
+    # Only process ERROR issues
+    error_issues = [i for i in issues if i.severity == ERROR]
+
+    # Group actions by image
+    # Determine which images to remove
+    remove_codes = {"DUP_IMAGE_EXACT", "DUP_IMAGE_NEAR", "LEAK_TEST", "CORRUPT_IMAGE", "BAD_SIZE"}
+    images_to_remove = set()
+    for i in error_issues:
+        if i.code in remove_codes:
+            images_to_remove.add(i.image)
+
+    # Process remove_image first
+    for i in error_issues:
+        if i.code in remove_codes:
+            img_path = ds.image_path(i.image)
+            label_path = ds.label_path(i.image)
+            before_parts = []
+            if img_path and img_path.exists():
+                before_parts.append(img_path.name)
+                img_path.unlink()
+            if label_path.exists():
+                before_parts.append(label_path.name)
+                label_path.unlink()
+            fixes.append({
+                "image": i.image,
+                "line": "",
+                "action": "remove_image",
+                "before": ", ".join(before_parts) if before_parts else i.image,
+                "after": "(xoá)",
+            })
+
+    # Process MISSING_LABEL_FILE -> needs_label (no file created)
+    for i in error_issues:
+        if i.code == "MISSING_LABEL_FILE":
+            fixes.append({
+                "image": i.image,
+                "line": "",
+                "action": "needs_label",
+                "before": "(không có file)",
+                "after": "chuyển người gán",
+            })
+
+    # Process BAD_CLASS_NAME -> rename_classes in data.yaml
+    for i in error_issues:
+        if i.code == "BAD_CLASS_NAME":
+            names = {idx: name for idx, name in enumerate(cfg["classes"])}
+            data = yaml.safe_load(ds.yaml_path.read_text(encoding="utf-8")) or {}
+            data["names"] = names
+            ds.yaml_path.write_text(yaml.safe_dump(data, allow_unicode=True, default_flow_style=False), encoding="utf-8")
+            fixes.append({
+                "image": "data.yaml",
+                "line": "",
+                "action": "rename_classes",
+                "before": str(i.message),
+                "after": str(cfg["classes"]),
+            })
+            break  # only fix once
+
+    # Group line-level issues by file (drop_line and clip_box)
+    line_issues_by_image = defaultdict(dict)  # image -> {lineno -> list of issues}
+    for i in error_issues:
+        if i.image in images_to_remove:
+            continue  # skip issues for removed images
+        if i.line is not None and i.code not in {"MISSING_LABEL_FILE", "BAD_CLASS_NAME"}:
+            if i.line not in line_issues_by_image[i.image]:
+                line_issues_by_image[i.image][i.line] = []
+            line_issues_by_image[i.image][i.line].append(i)
+
+    drop_codes = {"BAD_FORMAT", "BAD_CLASS_ID", "BOX_ZERO", "DUP_BOX"}
+
+    for stem in sorted(line_issues_by_image.keys()):
+        line_issues = line_issues_by_image[stem]
+        label_path = ds.label_path(stem)
+        if not label_path.exists():
+            continue
+
+        all_lines = label_path.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        file_fixes = []
+
+        for idx, line_text in enumerate(all_lines, 1):
+            if idx in line_issues:
+                codes = {iss.code for iss in line_issues[idx]}
+                # If any drop code, drop the line
+                if codes & drop_codes:
+                    file_fixes.append({
+                        "image": stem,
+                        "line": idx,
+                        "action": "drop_line",
+                        "before": line_text,
+                        "after": "(xoá)",
+                    })
+                    continue  # don't add to new_lines
+                elif "BOX_OUT_OF_IMAGE" in codes:
+                    # Clip box
+                    try:
+                        cls_id, cx, cy, w, h = parse_yolo_line(line_text)
+                    except ValueError:
+                        new_lines.append(line_text)
+                        continue
+
+                    left = max(0.0, cx - w / 2)
+                    top = max(0.0, cy - h / 2)
+                    right = min(1.0, cx + w / 2)
+                    bottom = min(1.0, cy + h / 2)
+
+                    new_w = right - left
+                    new_h = bottom - top
+
+                    if new_w <= 0 or new_h <= 0:
+                        # Box fully outside -> drop
+                        file_fixes.append({
+                            "image": stem,
+                            "line": idx,
+                            "action": "drop_line",
+                            "before": line_text,
+                            "after": "(xoá — box nằm hẳn ngoài ảnh)",
+                        })
+                        continue
+
+                    new_cx = left + new_w / 2
+                    new_cy = top + new_h / 2
+                    new_text = f"{cls_id} {new_cx:.6f} {new_cy:.6f} {new_w:.6f} {new_h:.6f}"
+                    file_fixes.append({
+                        "image": stem,
+                        "line": idx,
+                        "action": "clip_box",
+                        "before": line_text,
+                        "after": new_text,
+                    })
+                    new_lines.append(new_text)
+                    continue
+
+            new_lines.append(line_text)
+
+        # Write back
+        label_path.write_text("\n".join(new_lines) + "\n" if new_lines else "", encoding="utf-8")
+        fixes.extend(file_fixes)
+
+    return fixes
