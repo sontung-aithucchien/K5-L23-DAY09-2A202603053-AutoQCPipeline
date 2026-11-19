@@ -36,7 +36,7 @@ Tổng hợp lỗi từ báo cáo `02_error_list_v1` (trên tổng số 203 ản
 ## 3. Calibration (2 ngưỡng)
 | Tham số | Khởi đầu | Đã chọn | Precision / Recall (trước → sau) | Lý do (đánh đổi) |
 |---|---|---|---|---|
-| `duplicates.phash_dist` | 2 | 6 | DUP_IMAGE_NEAR: 1.00 / 0.50 → 1.00 / 0.67 (calib) | Tăng recall để bắt ảnh trùng qua resize nhẹ (như `img_0223` của `img_0077` có dist=6) và rò rỉ test (`img_0221`), trong khi vẫn giữ Precision tuyệt đối 1.00 (không xóa nhầm ảnh tốt). |
+| `duplicates.phash_dist` | 2 | 6 | DUP_IMAGE_NEAR: 1.00 / 0.50 → 1.00 / 0.67 (calib) | Tăng recall để bắt ảnh trùng qua resize nhẹ (như `img_0223` của `img_0077` có dist=6) và rò rỉ test (`img_0221`), trong khi vẫn giữ Precision tuyệt đối 1.00 (không xóa nhầm ảnh tốt). Trên calib (39 ảnh), sweep cho thấy dist=4 và dist=6 cùng đạt R=0.67 — không phân biệt được trong không gian nhỏ. Chọn dist=6 thay vì 4 vì cặp `img_0223`/`img_0077` trên dữ liệu raw có khoảng cách pHash đúng bằng 6; nếu ghim dist=4 sẽ bỏ sót cặp này. |
 | `second_opinion.conf` | 0.25 | 0.50 | MISSING: 0.50 / 1.00 → 0.57 / 1.00; WRONG_CLASS: 0.56 / 0.83 → 0.56 / 0.83 | Tăng Precision từ 0.50 lên 0.57 giúp giảm cảnh báo giả chuyển cho người duyệt, đồng thời giữ nguyên 100% Recall đối với lỗi bỏ sót vật thể (MISSING). Không chọn conf > 0.6 vì Recall sẽ sụt giảm (0.88 ở 0.7 và 0.75 ở 0.8). |
 
 **Một chỗ calibration có thể đánh lừa bạn (Calibration Trap):**
